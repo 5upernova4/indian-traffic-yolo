@@ -60,6 +60,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=26)
     ap.add_argument("--long-side", type=int, default=1280)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--splits", nargs="+", default=["train", "val", "test"], help="which image splits to download")
     ap.add_argument("--manifest", type=Path, default=None, help="optional path to also write the sample manifest")
     args = ap.parse_args()
 
@@ -111,7 +112,7 @@ def main() -> None:
 
     # 4. images (parallel HTTP download -> jpeg -> delete png) ------------------------
     todo = []
-    for split in ("val", "train", "test"):  # training needs train + val first; test is only used at the end
+    for split in [x for x in ("val", "train", "test") if x in args.splits]:  # train + val first; test is used last
         src, names = plan[split]
         for n in names:
             dst = yolo / "images" / split / f"{Path(n).stem}.jpg"

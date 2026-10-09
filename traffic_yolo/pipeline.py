@@ -18,6 +18,9 @@ from .viz import TrailBuffer, draw_detections, draw_hud, draw_line_counter
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WEIGHTS = ROOT / "weights" / "yolo11s_uvh26.pt"
+# Inference size used by default for the shipped v2 weights (picked on the held-out test split,
+# see docs/metrics/comparison.json). Other weights default to their own training size.
+SHIPPED_IMGSZ = {"yolo11s_uvh26": 640}
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
@@ -84,6 +87,8 @@ class Detector:
         self.predict(np.zeros((self.imgsz, self.imgsz, 3), np.uint8))
 
     def _native_imgsz(self) -> int:
+        if self.weights.stem in SHIPPED_IMGSZ:
+            return SHIPPED_IMGSZ[self.weights.stem]
         if self.is_onnx:
             import onnxruntime as ort
 

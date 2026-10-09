@@ -114,6 +114,33 @@ def v1_vs_v2(v1: dict, v2: dict, out: Path) -> None:
     plt.close(fig)
 
 
+def imgsz_comparison(metrics: Path, out: Path) -> None:
+    sizes = sorted(int(p.stem.split("_")[-1]) for p in metrics.glob("test_v2_[0-9]*.json"))
+    if len(sizes) < 2:
+        return
+    res = {sz: json.loads((metrics / f"test_v2_{sz}.json").read_text()) for sz in sizes}
+    names = [DISPLAY_NAMES[n] for n in CLASS_NAMES]
+    x = np.arange(len(names) + 1)
+    w = 0.8 / len(sizes)
+    colors = [BLUE, ORANGE, AQUA]
+    fig, ax = plt.subplots(figsize=(8.5, 3.6))
+    for k, sz in enumerate(sizes):
+        vals = [res[sz]["per_class"][n]["AP50_95"] for n in CLASS_NAMES] + [res[sz]["mAP50_95"]]
+        xs = x - 0.4 + w * (k + 0.5)
+        ax.bar(xs, vals, w * 0.94, color=colors[k % 3], label=f"inference at {sz}px")
+        for xi, v in zip(xs, vals):
+            ax.text(xi, v + 0.01, f"{v:.2f}", ha="center", color=INK, fontsize=7.5)
+    ax.set_xticks(x, names + ["All (mAP)"])
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("AP@50-95")
+    ax.grid(axis="x", visible=False)
+    ax.set_title("v2 (trained at 640px): held-out AP@50-95 by inference size", loc="left")
+    ax.legend(loc="upper right", ncol=len(sizes))
+    fig.tight_layout()
+    fig.savefig(out / "imgsz_comparison.png", dpi=160)
+    plt.close(fig)
+
+
 def confusion(v2: dict, out: Path) -> None:
     cm = np.array(v2["confusion_matrix"]["matrix"], float)
     labels = [DISPLAY_NAMES.get(n, n.capitalize()) for n in v2["confusion_matrix"]["labels"]]
@@ -167,8 +194,9 @@ def side_by_side(data: Path, out: Path, name: str) -> None:
 
     tmp = out / "_tmp"
     tiles = []
-    for tag, w in [("v1 (legacy, 416px)", "weights/v1_legacy.onnx"), ("v2 (this release, 960px)", None)]:
+    for tag, w in [("v1 (legacy)", "weights/v1_legacy.onnx"), ("v2 (this release)", None)]:
         det = Detector(w)
+        tag = f"{tag}, {det.imgsz}px"
         process_image(data / "images" / "test" / name, tmp / tag, det)
         t = cv2.resize(cv2.imread(str(tmp / tag / "annotated.jpg")), (960, 540), interpolation=cv2.INTER_AREA)
         cv2.rectangle(t, (0, 500), (960, 540), (20, 20, 20), -1)
@@ -195,6 +223,7 @@ def main() -> None:
     per_class_ap(v2, args.out)
     v1_vs_v2(v1, v2, args.out)
     confusion(v2, args.out)
+    imgsz_comparison(args.metrics, args.out)
     if args.data and args.samples:
         prediction_grid(args.data, args.out, Path("docs/samples"), args.samples)
     if args.data and args.compare_sample:

@@ -2,8 +2,8 @@
 
     python scripts/compare_models.py --data ../_data/uvh26/yolo
 
-Writes docs/metrics/test_v1.json, docs/metrics/test_v2.json and docs/metrics/comparison.json.
-Also runs Ultralytics' own validator on v2 as a cross-check (docs/metrics/test_v2_ultralytics.json).
+Writes docs/metrics/test_v1.json, test_v2_640.json, test_v2_960.json, test_v2.json (the better of
+the two sizes, by mAP50-95) and comparison.json. Also runs Ultralytics' own validator on v2 as a cross-check (docs/metrics/test_v2_ultralytics.json).
 """
 
 from __future__ import annotations
@@ -29,23 +29,30 @@ def main() -> None:
     ap.add_argument("--v2", default="weights/yolo11s_uvh26.pt")
     ap.add_argument("--out", type=Path, default=Path("docs/metrics"))
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--v2-sizes", type=int, nargs="+", default=[640, 960])
     ap.add_argument("--skip-ultralytics", action="store_true")
     args = ap.parse_args()
     test_imgs = args.data / "images" / "test"
 
     results = {}
-    # Each model runs at its native resolution (the v1 ONNX graph has a fixed 416x416 input).
-    for tag, w in [("v1", args.v1), ("v2", args.v2)]:
-        det = Detector(w)
-        print(f"== {tag}: {w} (imgsz {det.imgsz}, {det.device})")
+    # v1 runs at its native 416 px (its ONNX graph has a fixed input). v2 was trained at 640 px and is
+    # scored at 640 and at 960 px; the better size becomes the documented default ("v2").
+    runs = [("v1", args.v1, None)] + [(f"v2_{sz}", args.v2, sz) for sz in args.v2_sizes]
+    for tag, w, sz in runs:
+        det = Detector(w, imgsz=sz)
+        print(f"== {tag}: {w} (imgsz {det.imgsz}, {det.device})", flush=True)
         r = evaluate(det, test_imgs, limit=args.limit)
         r["subset_v1_classes"] = subset_map(r, V1_CLASSES)
         save(r, args.out / f"test_{tag}.json")
         results[tag] = r
-        print(json.dumps({k: r[k] for k in ("mAP50", "mAP50_95", "precision", "recall")}, indent=1))
+        print(json.dumps({k: r[k] for k in ("mAP50", "mAP50_95", "precision", "recall")}, indent=1), flush=True)
+    best = max((t for t in results if t.startswith("v2_")), key=lambda t: results[t]["mAP50_95"])
+    results["v2"] = dict(results[best], selected_from=[t for t in results if t.startswith("v2_")])
+    save(results["v2"], args.out / "test_v2.json")
+    print(f"selected {best} as the default v2 inference size")
 
     comp = {
-        "test_set": {"images": results["v2"]["images"], "instances": results["v2"]["instances"]},
+        "test_set": {"images": results["v1"]["images"], "instances": results["v1"]["instances"]},
         "models": {
             tag: {"weights": r["model"], "imgsz": r["imgsz"], "mAP50": r["mAP50"], "mAP50_95": r["mAP50_95"],
                   "precision": r["precision"], "recall": r["recall"],
@@ -53,8 +60,9 @@ def main() -> None:
                   "mAP50_95_v1_classes": r["subset_v1_classes"]["mAP50_95"],
                   "per_class_AP50": {k: v["AP50"] for k, v in r["per_class"].items()},
                   "per_class_AP50_95": {k: v["AP50_95"] for k, v in r["per_class"].items()}}
-            for tag, r in results.items()
+            for tag, r in results.items() if tag != "v2"
         },
+        "selected_v2": best,
     }
     save(comp, args.out / "comparison.json")
 

@@ -1,9 +1,11 @@
 """Fine-tune YOLO11 on the converted UVH-26 subset.
 
-    python scripts/train.py --data ../_data/uvh26/yolo/dataset.yaml --epochs 40
+    python scripts/train.py --data ../_data/uvh26/yolo/dataset.yaml
 
-Hyper-parameters used for the released weights are the defaults below
-(see docs/metrics/train_args.yaml for the exact resolved config).
+The defaults below are exactly what produced the released weights (imgsz 640, batch 8,
+2 dataloader workers, 32 epochs with early-stopping patience 10, on an Apple M5 with 16 GB).
+A 960 px run was tried first but needed ~13 GB of GPU memory plus swap on a 16 GB machine,
+so it was stopped after one epoch. See docs/metrics/train_args.yaml for the resolved config.
 """
 
 from __future__ import annotations
@@ -21,14 +23,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--model", default="yolo11s.pt")
-    ap.add_argument("--epochs", type=int, default=40)
-    ap.add_argument("--imgsz", type=int, default=960)
+    ap.add_argument("--epochs", type=int, default=32)
+    ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--patience", type=int, default=15)
+    ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--patience", type=int, default=10)
     ap.add_argument("--device", default=None)
     ap.add_argument("--project", default="runs/train")
-    ap.add_argument("--name", default="yolo11s_uvh26")
+    ap.add_argument("--name", default="yolo11s_uvh26_640")
     ap.add_argument("--fraction", type=float, default=1.0, help="use a fraction of the train set (for quick timing runs)")
     ap.add_argument("--resume", action="store_true")
     args = ap.parse_args()

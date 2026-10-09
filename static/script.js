@@ -92,6 +92,7 @@ document.addEventListener('DOMContentLoaded', () => {
         mediaContainer.innerHTML = '';
         fileInput.value = '';
         lastResult = null;
+        history.replaceState(null, '', '/');
         resetProgress();
     });
 
@@ -124,6 +125,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         // Fill bar to 100% before resolving
                         setProgress(1, 1, 'Complete!');
                         setTimeout(() => resolve(data), 300);
+                        return;
+                    }
+
+                    if (data.status === 'not_found') {
+                        reject(new Error('This result is no longer available.'));
                         return;
                     }
 
@@ -206,22 +212,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await pollProgress(runId);
 
             // 4. Hide loading, display results
-            loadingState.classList.add('hidden');
-            resultSection.classList.remove('hidden');
-
-            // 5. Render the annotated media + analytics returned by the backend
-            lastResult = result;
-            renderMedia(result, 'annotated');
-            renderStats(result);
-            renderClassBars(result);
-            renderTimeline(result);
-            renderDownloads(result);
-
-            // 6. Wire up CSV download button
-            if (downloadCsvBtn && result.csv_url) {
-                downloadCsvBtn.href = result.csv_url;
-                downloadCsvBtn.download = 'detections.csv';
-            }
+            showResult(result);
+            history.replaceState(null, '', `?run=${runId}`);
         } catch (err) {
             loadingState.classList.add('hidden');
             dropzone.classList.remove('hidden');
@@ -232,6 +224,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ── Results rendering ───────────────────────────────────────────────────
+    function showResult(result) {
+        loadingState.classList.add('hidden');
+        dropzone.classList.add('hidden');
+        settingsRow.classList.add('hidden');
+        resultSection.classList.remove('hidden');
+
+        lastResult = result;
+        renderMedia(result, 'annotated');
+        renderStats(result);
+        renderClassBars(result);
+        renderTimeline(result);
+        renderDownloads(result);
+
+        if (downloadCsvBtn && result.csv_url) {
+            downloadCsvBtn.href = result.csv_url;
+            downloadCsvBtn.download = 'detections.csv';
+        }
+    }
+
+    // Results stay reachable at /?run=<id> while the server is running.
+    const runParam = new URLSearchParams(window.location.search).get('run');
+    if (runParam && /^[0-9a-f]{32}$/.test(runParam)) {
+        dropzone.classList.add('hidden');
+        settingsRow.classList.add('hidden');
+        loadingState.classList.remove('hidden');
+        pollProgress(runParam).then(showResult).catch(() => {
+            loadingState.classList.add('hidden');
+            dropzone.classList.remove('hidden');
+            settingsRow.classList.remove('hidden');
+            history.replaceState(null, '', '/');
+        });
+    }
+
     mediaTabs.addEventListener('click', (e) => {
         const tab = e.target.closest('.tab');
         if (!tab || !lastResult) return;

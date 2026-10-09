@@ -1,352 +1,112 @@
+"""Vehicle Insights - Flask web app for vehicle detection, tracking and counting.
+
+Upload an image or a video; inference runs in a background thread while the page
+polls /progress/<run_id>. Videos are tracked with ByteTrack and vehicles are counted
+as they cross a virtual line. Results: annotated media, per-class counts, a density
+heatmap (videos) and CSV / JSON downloads.
+
+    python app.py                      # http://127.0.0.1:5000
+    TRAFFIC_YOLO_WEIGHTS=weights/yolo11s_uvh26.onnx python app.py
+"""
+
 import os
-import uuid
-import glob
-import csv
-import subprocess
 import threading
-import shutil
-import cv2
-import numpy as np
-from flask import Flask, request, jsonify, render_template
-from werkzeug.utils import secure_filename
-from ultralytics import YOLO
-from tqdm import tqdm
+import traceback
+import uuid
+
+from flask import Flask, jsonify, render_template, request
+
+from traffic_yolo.classes import CLASS_COLORS_BGR, CLASS_NAMES, DISPLAY_NAMES
+from traffic_yolo.pipeline import IMAGE_EXTS, VIDEO_EXTS, Detector, default_lines, process_image, process_video
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['RESULT_FOLDER'] = 'static/results'
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1 GB
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['RESULT_FOLDER'], exist_ok=True)
 
-MODEL_PATH = "new.onnx"
+MODEL_PATH = os.environ.get('TRAFFIC_YOLO_WEIGHTS', 'weights/yolo11s_uvh26.pt')
 
 # ── Inference tuning ─────────────────────────────────────────────────────────
-# Process every Nth frame.  Skipped frames reuse the last set of detections.
-# 1 = every frame (slow), 3 = every 3rd frame (~3× speed-up), etc.
-FRAME_SKIP = 3
-
-# ── Class names from your training notebook (8-class vehicle model) ──────────
-CLASS_NAMES = {
-    0: 'auto',
-    1: 'bus',
-    2: 'car',
-    3: 'lcv',
-    4: 'motorcycle',
-    5: 'multiaxle',
-    6: 'tractor',
-    7: 'truck',
-}
-
-# Distinct BGR colours per class for bounding boxes
-CLASS_COLORS = {
-    0: (0,   165, 255),   # auto       → orange
-    1: (255,   0,   0),   # bus        → blue
-    2: (0,   255,   0),   # car        → green
-    3: (128,   0, 128),   # lcv        → purple
-    4: (0,   255, 255),   # motorcycle → yellow
-    5: (0,   128, 255),   # multiaxle  → light-blue
-    6: (255, 255,   0),   # tractor    → cyan
-    7: (0,     0, 255),   # truck      → red
-}
+# Run the model on every Nth video frame (1 = every frame). The tracker keeps
+# identities across skipped frames; raise this for long videos on slow machines.
+FRAME_STRIDE = int(os.environ.get('FRAME_STRIDE', '1'))
 
 try:
-    model = YOLO(MODEL_PATH, task='detect')
-    # Inject class names so r.plot() always has them,
-    # even when ONNX metadata is missing
-    if not model.names or len(model.names) == 0:
-        model.names = CLASS_NAMES
-    print(f"✅ Model loaded. Classes: {model.names}")
+    detector = Detector(MODEL_PATH)
+    detector.warmup()
+    print(f"Model loaded: {MODEL_PATH} (imgsz={detector.imgsz}, device={detector.device})")
 except Exception as e:
-    model = None
-    print(f"⚠️  Could not load model ({MODEL_PATH}): {e}")
+    detector = None
+    print(f"Could not load model ({MODEL_PATH}): {e}")
 
+# One job at a time: the tracker is stateful and the GPU is shared.
+inference_lock = threading.Lock()
 
 # ── Progress tracking store (keyed by run_id) ────────────────────────────────
 progress_store = {}
 
 
-# ── Helper: draw boxes manually (fallback / guaranteed path) ─────────────────
-def draw_boxes(image: np.ndarray, boxes, names: dict, orig_dims=None, infer_size=416) -> np.ndarray:
-    """Draw bounding boxes + labels directly on a copy of *image*.
-
-    Works regardless of whether r.plot() is functioning correctly,
-    because it reads raw xyxy tensors and paints them with OpenCV.
-    """
-    img = image.copy()
-    h, w = img.shape[:2]
-
-    for box in boxes:
-        cls_id  = int(box.cls[0].item())
-        conf    = float(box.conf[0].item())
-        
-        raw_xyxy = box.xyxy[0].tolist()
-        if orig_dims:
-            orig_w, orig_h = orig_dims
-            # Use raw_xyxy values to reconstruct size.
-            # If coordinates are extremely small (normalized), scale relative to original.
-            if max(raw_xyxy) <= 2.0:
-                scaled_xyxy = [raw_xyxy[0]*orig_w, raw_xyxy[1]*orig_h, raw_xyxy[2]*orig_w, raw_xyxy[3]*orig_h]
-            else:
-                scaled_xyxy = [raw_xyxy[0]*orig_w/infer_size, raw_xyxy[1]*orig_h/infer_size, raw_xyxy[2]*orig_w/infer_size, raw_xyxy[3]*orig_h/infer_size]
-            x1, y1, x2, y2 = [int(v) for v in scaled_xyxy]
-        else:
-            x1, y1, x2, y2 = [int(v) for v in raw_xyxy]
-
-        # Clamp to image bounds
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w - 1, x2), min(h - 1, y2)
-
-        color     = CLASS_COLORS.get(cls_id, (0, 255, 0))
-        label     = f"{names.get(cls_id, str(cls_id))} {conf:.2f}"
-        thickness = max(2, int(min(w, h) / 300))   # scale with image size
-        font_scale = max(0.4, min(w, h) / 1000)
-
-        # Rectangle
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
-
-        # Label background
-        (tw, th), baseline = cv2.getTextSize(
-            label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
-        )
-        label_y1 = max(y1 - th - baseline - 4, 0)
-        cv2.rectangle(
-            img,
-            (x1, label_y1),
-            (x1 + tw + 4, label_y1 + th + baseline + 4),
-            color, -1
-        )
-
-        # Label text (white)
-        cv2.putText(
-            img, label,
-            (x1 + 2, label_y1 + th + 2),
-            cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-            (255, 255, 255), thickness, cv2.LINE_AA
-        )
-
-    return img
+def _hex(bgr):
+    b, g, r = bgr
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
-# ── Video writer helpers ─────────────────────────────────────────────────────
-def _try_h264_writer(path, fps, size):
-    """Try several H.264 fourcc codes that OpenCV may support.
-    Returns an opened VideoWriter, or None.
-    """
-    for codec in ('avc1', 'H264', 'X264'):
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*codec)
-            writer = cv2.VideoWriter(path, fourcc, int(fps), size)
-            if writer.isOpened():
-                print(f"  ✅ Using native H.264 codec '{codec}' — no ffmpeg needed")
-                return writer
-            writer.release()
-        except Exception:
-            pass
-    return None
-
-
-def _reencode_with_ffmpeg(src, dst):
-    """Re-encode *src* to H.264 at *dst*.  Returns True on success."""
-    ffmpeg_bin = shutil.which('ffmpeg')
-    if not ffmpeg_bin:
-        print("  ⚠️  ffmpeg not found in PATH — video may not play in browser")
-        return False
-    cmd = [
-        ffmpeg_bin, '-y', '-i', src,
-        '-vcodec', 'libx264', '-crf', '28', '-preset', 'fast',
-        '-pix_fmt', 'yuv420p',          # required for browser compatibility
-        '-movflags', '+faststart',      # allows streaming before full download
-        dst,
-    ]
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception as e:
-        print(f"  ⚠️  ffmpeg re-encode failed: {e}")
-        return False
+CLASS_META = [{'id': n, 'label': DISPLAY_NAMES[n], 'color': _hex(CLASS_COLORS_BGR[n])} for n in CLASS_NAMES]
 
 
 # ── Background worker: runs inference + updates progress_store ───────────────
-def process_file(run_id, filepath, ext, out_dir, csv_path, is_video, names):
-    """Run YOLO inference in a background thread.
-
-    Updates progress_store[run_id] so the /progress endpoint can relay
-    frame-level progress to the frontend, and tqdm prints a console bar.
-    """
+def process_file(run_id, filepath, out_dir, is_video, line_cfg):
+    base = f"/static/results/{run_id}"
     try:
-        progress_store[run_id] = {
-            'status': 'processing',
-            'progress': 0,
-            'total': 1,
-            'message': 'Starting analysis…',
-        }
-
-        with open(csv_path, mode='w', newline='') as csv_file:
-            csv_writer = csv.writer(csv_file)
-            csv_writer.writerow(['frame_id', 'class_name', 'confidence', 'x1', 'y1', 'x2', 'y2'])
-
+        if inference_lock.locked():
+            progress_store[run_id].update({'message': 'Waiting for the previous job to finish…'})
+        with inference_lock:
             if is_video:
-                cap    = cv2.VideoCapture(filepath)
-                fps    = cap.get(cv2.CAP_PROP_FPS)
-                fps    = fps if fps and fps == fps else 25.0   # guard NaN/0
-                orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                total_frames = max(total_frames, 1)
-
-                # ── Decide codec: try H.264 first, fall back to mp4v ─────
-                final_path = os.path.join(out_dir, f"{run_id}.mp4")
-                raw_path   = os.path.join(out_dir, f"{run_id}_raw.mp4")
-
-                h264_writer = _try_h264_writer(final_path, fps, (orig_w, orig_h))
-                if h264_writer is not None:
-                    vid_writer     = h264_writer
-                    out_media      = final_path
-                    needs_reencode = False
-                else:
-                    fourcc     = cv2.VideoWriter_fourcc(*'mp4v')
-                    vid_writer = cv2.VideoWriter(raw_path, fourcc, int(fps), (orig_w, orig_h))
-                    out_media      = raw_path
-                    needs_reencode = True
-
-                infer_count = (total_frames + FRAME_SKIP - 1) // FRAME_SKIP
-                progress_store[run_id].update({
-                    'total': total_frames,
-                    'message': f'Processing {total_frames} frames ({infer_count} inferences, skip={FRAME_SKIP})…',
-                })
-
-                # ── tqdm console bar ─────────────────────────────────────
-                pbar = tqdm(
-                    total=total_frames,
-                    desc=f"[{run_id[:8]}] Inferencing (skip={FRAME_SKIP})",
-                    unit="frame",
-                    dynamic_ncols=True,
-                )
-
-                frame_id = 0
-                last_boxes = None        # reuse for skipped frames
-
-                while cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-
-                    # Run YOLO only on key frames
-                    if frame_id % FRAME_SKIP == 0:
-                        frame_resized = cv2.resize(frame, (416, 416))
-                        r = model.predict(source=frame_resized, imgsz=416, verbose=False)[0]
-                        last_boxes = r.boxes
-
-                        # Write CSV for key frames only
-                        for box in last_boxes:
-                            cls_id   = int(box.cls[0].item())
-                            cls_name = names.get(cls_id, str(cls_id))
-                            conf     = float(box.conf[0].item())
-
-                            raw_xyxy = box.xyxy[0].tolist()
-                            if max(raw_xyxy) <= 2.0:
-                                scaled_xyxy = [raw_xyxy[0]*orig_w, raw_xyxy[1]*orig_h, raw_xyxy[2]*orig_w, raw_xyxy[3]*orig_h]
-                            else:
-                                scaled_xyxy = [raw_xyxy[0]*orig_w/416.0, raw_xyxy[1]*orig_h/416.0, raw_xyxy[2]*orig_w/416.0, raw_xyxy[3]*orig_h/416.0]
-                            x1, y1, x2, y2 = [int(max(0, v)) for v in scaled_xyxy]
-                            csv_writer.writerow(
-                                [frame_id, cls_name, f"{conf:.2f}", x1, y1, x2, y2]
-                            )
-
-                    # Draw boxes on every frame (fresh or reused)
-                    if last_boxes is not None and len(last_boxes) > 0:
-                        annotated = draw_boxes(frame, last_boxes, names,
-                                               orig_dims=(orig_w, orig_h), infer_size=416)
-                    else:
-                        annotated = frame
-
-                    vid_writer.write(annotated)
-
-                    frame_id += 1
-                    pbar.update(1)
-                    progress_store[run_id]['progress'] = frame_id
-
-                pbar.close()
+                import cv2
+                cap = cv2.VideoCapture(filepath)
+                w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 cap.release()
-                vid_writer.release()
+                lines = default_lines(w, h, line_cfg['position'], line_cfg['orientation'])
+                stride_txt = 'every frame' if FRAME_STRIDE == 1 else f'every {FRAME_STRIDE} frames'
 
-                # ── Re-encode to H.264 if OpenCV couldn't do it natively ─
-                if needs_reencode:
-                    progress_store[run_id]['message'] = 'Encoding video for browser…'
-                    if _reencode_with_ffmpeg(raw_path, final_path):
-                        os.remove(raw_path)
-                        saved_media = final_path
-                    else:
-                        # ffmpeg unavailable/failed — rename raw → final
-                        # The browser may not play it, but the download will work
-                        if os.path.exists(final_path):
-                            os.remove(final_path)
-                        os.rename(raw_path, final_path)
-                        saved_media = final_path
-                else:
-                    saved_media = out_media
+                def on_progress(i, n):
+                    progress_store[run_id].update({
+                        'progress': i, 'total': n,
+                        'message': f'Tracking and counting vehicles (model runs on {stride_txt})…',
+                    })
 
+                summary = process_video(filepath, out_dir, detector, lines=lines, stride=FRAME_STRIDE,
+                                        progress=on_progress)
+                result = {
+                    'type': 'video',
+                    'url': f"{base}/annotated.mp4",
+                    'heatmap_url': f"{base}/heatmap.jpg",
+                    'crossings_csv_url': f"{base}/crossings.csv",
+                }
             else:
-                # ── Single image inference ────────────────────────────────
-                out_media  = os.path.join(out_dir, f"{run_id}.jpg")
-                frame = cv2.imread(filepath)
-                orig_h, orig_w = frame.shape[:2]
+                progress_store[run_id].update({'total': 1, 'message': 'Analyzing image…'})
+                summary = process_image(filepath, out_dir, detector)
+                result = {'type': 'image', 'url': f"{base}/annotated.jpg"}
 
-                progress_store[run_id].update({
-                    'total': 1,
-                    'message': 'Analyzing image…',
-                })
-
-                frame_resized = cv2.resize(frame, (416, 416))
-                r = model.predict(source=frame_resized, imgsz=416, verbose=False)[0]
-
-                annotated = draw_boxes(frame, r.boxes, names, orig_dims=(orig_w, orig_h), infer_size=416)
-                cv2.imwrite(out_media, annotated)
-
-                for box in r.boxes:
-                    cls_id   = int(box.cls[0].item())
-                    cls_name = names.get(cls_id, str(cls_id))
-                    conf     = float(box.conf[0].item())
-
-                    raw_xyxy = box.xyxy[0].tolist()
-                    if max(raw_xyxy) <= 2.0:
-                        scaled_xyxy = [raw_xyxy[0]*orig_w, raw_xyxy[1]*orig_h, raw_xyxy[2]*orig_w, raw_xyxy[3]*orig_h]
-                    else:
-                        scaled_xyxy = [raw_xyxy[0]*orig_w/416.0, raw_xyxy[1]*orig_h/416.0, raw_xyxy[2]*orig_w/416.0, raw_xyxy[3]*orig_h/416.0]
-                    x1, y1, x2, y2 = [int(max(0, v)) for v in scaled_xyxy]
-                    csv_writer.writerow(
-                        [0, cls_name, f"{conf:.2f}", x1, y1, x2, y2]
-                    )
-
-                progress_store[run_id]['progress'] = 1
-                saved_media = out_media
-
-        if not os.path.exists(saved_media):
-            progress_store[run_id] = {
-                'status': 'error',
-                'error': 'Inference produced no output file.',
-            }
-            return
-
-        result_file = os.path.basename(saved_media)
-        file_type   = "video" if is_video else "image"
-
-        # ── Mark as done — the frontend will pick this up on its next poll
-        progress_store[run_id] = {
+        result.update({
             'status': 'done',
-            'url':     f"/static/results/{run_id}/{result_file}",
-            'csv_url': f"/static/results/{run_id}/detections.csv",
-            'type':    file_type,
-        }
-
+            'csv_url': f"{base}/detections.csv",
+            'json_url': f"{base}/summary.json",
+            'summary': summary,
+            'classes': CLASS_META,
+        })
+        progress_store[run_id] = result
     except Exception as e:
-        import traceback
         traceback.print_exc()
-        progress_store[run_id] = {
-            'status': 'error',
-            'error': f'Inference error: {str(e)}',
-        }
+        progress_store[run_id] = {'status': 'error', 'error': f'Inference error: {e}'}
+    finally:
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -355,11 +115,17 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/health')
+def health():
+    return jsonify({'model': MODEL_PATH, 'loaded': detector is not None,
+                    'device': getattr(detector, 'device', None), 'classes': CLASS_NAMES})
+
+
 @app.route('/upload', methods=['POST'])
 def upload():
     """Accept the file, kick off background inference, return run_id immediately."""
-    if not model:
-        return jsonify({'error': f'Model not found. Place {MODEL_PATH} in the root directory.'}), 500
+    if not detector:
+        return jsonify({'error': f'Model not found. Expected weights at {MODEL_PATH}.'}), 500
 
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
@@ -368,34 +134,37 @@ def upload():
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
 
-    ext      = file.filename.rsplit('.', 1)[-1].lower()
-    run_id   = uuid.uuid4().hex
-    filename = f"{run_id}.{ext}"
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    ext = '.' + file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+    if ext not in IMAGE_EXTS | VIDEO_EXTS:
+        return jsonify({'error': f'Unsupported file type "{ext}". Upload an image or a video.'}), 400
+
+    try:
+        position = min(max(float(request.form.get('line_position', 0.6)), 0.05), 0.95)
+    except ValueError:
+        position = 0.6
+    orientation = request.form.get('line_orientation', 'horizontal')
+    if orientation not in ('horizontal', 'vertical'):
+        orientation = 'horizontal'
+
+    run_id = uuid.uuid4().hex
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{run_id}{ext}")
     file.save(filepath)
 
-    project_path = os.path.abspath(app.config['RESULT_FOLDER'])
-    out_dir      = os.path.join(project_path, run_id)
+    out_dir = os.path.join(os.path.abspath(app.config['RESULT_FOLDER']), run_id)
     os.makedirs(out_dir, exist_ok=True)
-
-    csv_path  = os.path.join(out_dir, "detections.csv")
-    is_video  = ext in ['mp4', 'avi', 'mov', 'mkv']
-
-    # Use the model's name dict (patched at startup if needed)
-    names = model.names or CLASS_NAMES
 
     # Seed the progress store so the first poll never 404s
     progress_store[run_id] = {
         'status': 'processing',
         'progress': 0,
         'total': 1,
-        'message': 'Uploading complete. Starting inference…',
+        'message': 'Upload complete. Starting inference…',
     }
 
     # Launch processing in a daemon thread so /upload returns instantly
     thread = threading.Thread(
         target=process_file,
-        args=(run_id, filepath, ext, out_dir, csv_path, is_video, names),
+        args=(run_id, filepath, out_dir, ext in VIDEO_EXTS, {'position': position, 'orientation': orientation}),
         daemon=True,
     )
     thread.start()
@@ -413,4 +182,5 @@ def progress(run_id):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
+    app.run(debug=False, host=os.environ.get('HOST', '127.0.0.1'), port=int(os.environ.get('PORT', 5000)),
+            threaded=True)

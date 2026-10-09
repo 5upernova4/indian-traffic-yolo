@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vehicle Insights | Next-Gen Monitoring</title>
+    <title>Vehicle Insights | Indian Traffic Analytics</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&display=swap" rel="stylesheet" crossorigin>
     <style>
         /* Ensure page renders immediately even if Google Fonts is unreachable */
@@ -25,7 +25,7 @@
                 <span class="icon">🚗</span>
                 <h1>Vehicle <span>Insights</span></h1>
             </div>
-            <p class="subtitle">AI-Powered Vehicle Detection & Telemetry</p>
+            <p class="subtitle">Vehicle Detection, Tracking &amp; Counting for Indian Roads</p>
         </header>
 
         <main>
@@ -43,7 +43,25 @@
                     <span class="divider">or</span>
                     <input type="file" id="fileInput" accept="image/*,video/*" hidden>
                     <button id="uploadBtn" class="btn btn-primary">Browse Files</button>
+                    <p class="upload-hint">Images (JPG, PNG) or videos (MP4, MOV, AVI, MKV)</p>
                 </div>
+            </div>
+
+            <div class="settings-row glass-panel-inner" id="settingsRow">
+                <span class="settings-title">Video counting line</span>
+                <label class="setting">
+                    <span>Orientation</span>
+                    <select id="lineOrientation">
+                        <option value="horizontal" selected>Horizontal</option>
+                        <option value="vertical">Vertical</option>
+                    </select>
+                </label>
+                <label class="setting">
+                    <span>Position</span>
+                    <input type="range" id="linePosition" min="10" max="90" step="5" value="60">
+                    <span class="setting-value" id="linePositionValue">60%</span>
+                </label>
+                <div class="line-preview" id="linePreview" aria-hidden="true"><div class="line-preview-line" id="linePreviewLine"></div></div>
             </div>
 
             <div id="loading" class="loading-state hidden">
@@ -80,8 +98,31 @@
                         </a>
                     </div>
                 </div>
+
+                <div class="stats-grid" id="statsGrid"></div>
+
+                <div class="media-tabs hidden" id="mediaTabs" role="tablist">
+                    <button class="tab active" data-view="annotated" role="tab">Annotated video</button>
+                    <button class="tab" data-view="heatmap" role="tab">Traffic density heatmap</button>
+                </div>
                 <div id="mediaContainer" class="media-container glass-panel-inner">
                 </div>
+
+                <div class="insights-grid">
+                    <div class="insight-card glass-panel-inner">
+                        <h3 id="classCardTitle">Vehicles by class</h3>
+                        <p class="insight-sub" id="classCardSub"></p>
+                        <div class="class-bars" id="classBars"></div>
+                    </div>
+                    <div class="insight-card glass-panel-inner hidden" id="timelineCard">
+                        <h3>Vehicles in view over time</h3>
+                        <p class="insight-sub">Average number of detected vehicles per second, by class</p>
+                        <canvas id="timelineChart" height="220"></canvas>
+                        <div class="chart-legend" id="timelineLegend"></div>
+                    </div>
+                </div>
+
+                <div class="extra-downloads" id="extraDownloads"></div>
             </div>
         </main>
     </div>

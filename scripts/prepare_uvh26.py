@@ -111,7 +111,8 @@ def main() -> None:
 
     # 4. images (parallel HTTP download -> jpeg -> delete png) ------------------------
     todo = []
-    for split, (src, names) in plan.items():
+    for split in ("val", "train", "test"):  # training needs train + val first; test is only used at the end
+        src, names = plan[split]
         for n in names:
             dst = yolo / "images" / split / f"{Path(n).stem}.jpg"
             if not dst.exists():

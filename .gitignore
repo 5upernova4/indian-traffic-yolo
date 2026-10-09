@@ -137,5 +137,11 @@ dmypy.json
 # Application specific
 uploads/
 runs/
+static/results/
 *.pt
+!weights/*.pt
 *.weights
+*.mp4
+*.mov
+*.avi
+.DS_Store

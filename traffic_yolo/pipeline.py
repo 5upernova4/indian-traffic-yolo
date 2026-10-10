@@ -83,8 +83,9 @@ class Detector:
         self.names = list(CLASS_NAMES)
 
     def warmup(self) -> None:
-        """Run one dummy inference so the first real request is not slowed by lazy initialisation."""
-        self.predict(np.zeros((self.imgsz, self.imgsz, 3), np.uint8))
+        """Run dummy inferences so the first real request is not slowed by lazy initialisation."""
+        for shape in ((720, 1280, 3), (self.imgsz, self.imgsz, 3)):  # 16:9 frames and square images
+            self.predict(np.zeros(shape, np.uint8))
 
     def _native_imgsz(self) -> int:
         if self.weights.stem in SHIPPED_IMGSZ:

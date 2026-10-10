@@ -4,13 +4,14 @@
 
 Writes docs/metrics/test_v1.json, test_v2_640.json, test_v2_960.json, test_v2.json (the better of
 the two sizes, by mAP50-95) and comparison.json. Also runs Ultralytics' own validator on v2 as a cross-check (docs/metrics/test_v2_ultralytics.json).
+Note that `yolo val` uses multi-label NMS (one box may count for several classes), which scores
+about 2 mAP points higher than the single-label predictions the app actually produces.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -79,10 +80,6 @@ def main() -> None:
                for i, c in enumerate(v.box.ap_class_index)}
         save({"mAP50": float(v.box.map50), "mAP50_95": float(v.box.map), "precision": float(v.box.mp),
               "recall": float(v.box.mr), "per_class": per, "speed_ms": v.speed}, args.out / "test_v2_ultralytics.json")
-        for f in ("confusion_matrix_normalized.png", "BoxPR_curve.png"):
-            src = Path(v.save_dir) / f
-            if src.exists():
-                shutil.copy(src, args.out.parent / "figures" / f"ultralytics_{f}")
 
 
 if __name__ == "__main__":

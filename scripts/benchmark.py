@@ -53,9 +53,10 @@ def main() -> None:
     args = ap.parse_args()
     imgs = sorted(Path(args.images).glob("*.jpg"))[: args.n]
     runs = [
-        ("weights/yolo11s_uvh26.pt", "mps", None),
-        ("weights/yolo11s_uvh26.onnx", "cpu", None),
+        ("weights/yolo11s_uvh26.pt", "mps", 640),
+        ("weights/yolo11s_uvh26.pt", "mps", 960),
         ("weights/yolo11s_uvh26.onnx", "cpu", 640),
+        ("weights/yolo11s_uvh26.onnx", "cpu", 960),
         ("weights/v1_legacy.onnx", "cpu", None),
     ]
     results = []

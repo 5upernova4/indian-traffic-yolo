@@ -1,0 +1,84 @@
+{
+  "machine": "arm64 macOS-27.0.1-arm64-arm-64bit",
+  "chip": "Apple M5 (10-core CPU), 16 GB",
+  "torch": "2.14.1",
+  "onnxruntime": "1.31.0",
+  "ultralytics": "8.4.174",
+  "results": [
+    {
+      "weights": "yolo11s_uvh26.pt",
+      "device": "mps",
+      "imgsz": 640,
+      "frames": 200,
+      "frame_size": [
+        1280,
+        720
+      ],
+      "preprocess_ms": 0.51,
+      "inference_ms": 2.32,
+      "postprocess_ms": 9.32,
+      "end_to_end_ms": 12.21,
+      "fps_end_to_end": 81.9
+    },
+    {
+      "weights": "yolo11s_uvh26.pt",
+      "device": "mps",
+      "imgsz": 960,
+      "frames": 200,
+      "frame_size": [
+        1280,
+        720
+      ],
+      "preprocess_ms": 0.71,
+      "inference_ms": 2.48,
+      "postprocess_ms": 16.07,
+      "end_to_end_ms": 19.32,
+      "fps_end_to_end": 51.8
+    },
+    {
+      "weights": "yolo11s_uvh26.onnx",
+      "device": "cpu",
+      "imgsz": 640,
+      "frames": 200,
+      "frame_size": [
+        1280,
+        720
+      ],
+      "preprocess_ms": 0.86,
+      "inference_ms": 22.25,
+      "postprocess_ms": 0.28,
+      "end_to_end_ms": 23.51,
+      "fps_end_to_end": 42.5
+    },
+    {
+      "weights": "yolo11s_uvh26.onnx",
+      "device": "cpu",
+      "imgsz": 960,
+      "frames": 200,
+      "frame_size": [
+        1280,
+        720
+      ],
+      "preprocess_ms": 4.01,
+      "inference_ms": 44.03,
+      "postprocess_ms": 0.51,
+      "end_to_end_ms": 48.64,
+      "fps_end_to_end": 20.6
+    },
+    {
+      "weights": "v1_legacy.onnx",
+      "device": "cpu",
+      "imgsz": 416,
+      "frames": 200,
+      "frame_size": [
+        1280,
+        720
+      ],
+      "preprocess_ms": 3.16,
+      "inference_ms": 6.9,
+      "postprocess_ms": 0.27,
+      "end_to_end_ms": 10.41,
+      "fps_end_to_end": 96.0
+    }
+  ]
+}

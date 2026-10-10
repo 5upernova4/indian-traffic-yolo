@@ -1,0 +1,17 @@
+# runtime
+ultralytics>=8.3.0
+torch>=2.2
+onnxruntime>=1.17
+opencv-python>=4.8
+numpy>=1.24
+flask>=3.0
+werkzeug>=3.0
+lap>=0.5          # ByteTrack association
+# training / evaluation / figures
+huggingface_hub>=0.24
+requests>=2.31
+pandas>=2.0
+matplotlib>=3.8
+# tests
+pytest>=8.0
+gunicorn          # optional; run with a single worker (job progress is kept in memory)
